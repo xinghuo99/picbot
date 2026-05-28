@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 
 # API 配置
 API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-API_KEY = "sk-3097fa5c89b74c5f89bc3337a59554aa"  # 替换为自己的 API Key，去模型平台注册账号，并申请API Key.
+API_KEY = "sk-aaaaaaaaa"  # 替换为自己的 API Key，去模型平台注册账号，并申请API Key.
 
 
 class PicBot(QWidget):

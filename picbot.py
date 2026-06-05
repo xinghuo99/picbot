@@ -2,9 +2,9 @@ import sys
 import requests
 import json
 import logging
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit, QPushButton, QLabel, QFileDialog, QInputDialog, QFontDialog, QColorDialog, QMenu, QAction, QShortcut
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QMetaObject, Q_ARG, QRect, QPoint
-from PyQt5.QtGui import QPixmap, QScreen, QPainter, QPen, QCursor, QColor, QPolygon, QBrush, QFont, QKeySequence
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit, QPushButton, QLabel, QFileDialog, QInputDialog, QFontDialog, QColorDialog, QMenu, QAction, QShortcut, QFontComboBox, QComboBox
+from PyQt5.QtCore import QThread, pyqtSignal, Qt, QMetaObject, Q_ARG, QRect, QPoint, QRectF
+from PyQt5.QtGui import QPixmap, QScreen, QPainter, QPen, QCursor, QColor, QPolygon, QBrush, QFont, QKeySequence, QIcon
 
 import os
 import base64
@@ -18,6 +18,138 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 # API 配置
 API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 API_KEY = "sk-xxx"  # 替换为自己的 API Key，去模型平台注册账号，并申请API Key.
+
+# 全局快捷键常量
+MOD_ALT = 0x0001
+MOD_NOREPEAT = 0x4000
+WM_HOTKEY = 0x0312
+VK_1 = 0x31
+VK_2 = 0x32
+VK_3 = 0x33
+VK_Q = 0x51
+VK_W = 0x57
+HK_SCREENSHOT = 1
+HK_PASTE = 2
+HK_CANCEL_SCREENSHOT = 3
+HK_DOODLE = 4
+HK_DOODLE_END = 5
+
+# 当前活跃的截图窗口引用，用于全局快捷键取消截图
+_active_screenshot_window = None
+# 当前活跃的涂鸦窗口引用，用于全局快捷键结束涂鸦
+_active_doodle_window = None
+# 独立函数创建的钉图窗口列表，防止被垃圾回收
+_standalone_pinned_windows = []
+
+
+def capture_screenshot():
+    """
+    独立的截图函数，与主窗口无关，可在任意地方调用。
+    返回截取的区域图片 QPixmap，如果取消则返回 None。
+    """
+    from PyQt5.QtCore import QEventLoop
+    
+    # 截图所有屏幕
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    
+    screens = QApplication.screens()
+    screen_geoms = [s.geometry() for s in screens]
+    all_x = min(g.x() for g in screen_geoms)
+    all_y = min(g.y() for g in screen_geoms)
+    all_right = max(g.x() + g.width() for g in screen_geoms)
+    all_bottom = max(g.y() + g.height() for g in screen_geoms)
+    total_w = all_right - all_x
+    total_h = all_bottom - all_y
+    
+    combined = QPixmap(total_w, total_h)
+    combined.fill(Qt.black)
+    painter = QPainter(combined)
+    for s in screens:
+        geom = s.geometry()
+        shot = s.grabWindow(0)
+        painter.drawPixmap(geom.x() - all_x, geom.y() - all_y, shot)
+    painter.end()
+    
+    result = {'pixmap': None}
+    loop = QEventLoop()
+    
+    window = ScreenshotWindow(combined)
+    
+    def on_taken(pixmap):
+        global _active_screenshot_window
+        _active_screenshot_window = None
+        result['pixmap'] = pixmap
+        loop.quit()
+    
+    def on_canceled():
+        global _active_screenshot_window
+        _active_screenshot_window = None
+        result['pixmap'] = None
+        loop.quit()
+    
+    def on_pinned(pixmap, pos):
+        global _active_screenshot_window, _standalone_pinned_windows
+        _active_screenshot_window = None
+        pinned = PinnedWindow(pixmap, pos)
+        pinned.show()
+        _standalone_pinned_windows.append(pinned)
+        result['pixmap'] = None
+        loop.quit()
+    
+    window.screenshot_taken.connect(on_taken)
+    window.screenshot_canceled.connect(on_canceled)
+    window.screenshot_pinned.connect(on_pinned)
+    window.setGeometry(all_x, all_y, total_w, total_h)
+    
+    global _active_screenshot_window
+    _active_screenshot_window = window
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    
+    loop.exec_()
+    return result['pixmap']
+
+
+def start_doodle(pixmap):
+    """
+    独立的涂鸦函数，与主窗口无关，可在任意地方调用。
+    传入原始图片 QPixmap，返回涂鸦后的图片 QPixmap。
+    """
+    from PyQt5.QtCore import QEventLoop
+    
+    result = {'pixmap': None}
+    loop = QEventLoop()
+    
+    window = DoodleWindow(pixmap)
+    
+    def on_finished(doodled):
+        global _active_doodle_window
+        _active_doodle_window = None
+        result['pixmap'] = doodled
+        loop.quit()
+    
+    window.doodle_finished.connect(on_finished)
+    
+    # 窗口覆盖所有屏幕，与 pixmap 尺寸对齐
+    screens = QApplication.screens()
+    screen_geoms = [s.geometry() for s in screens]
+    all_x = min(g.x() for g in screen_geoms)
+    all_y = min(g.y() for g in screen_geoms)
+    all_right = max(g.x() + g.width() for g in screen_geoms)
+    all_bottom = max(g.y() + g.height() for g in screen_geoms)
+    window.setGeometry(all_x, all_y, all_right - all_x, all_bottom - all_y)
+    
+    global _active_doodle_window
+    _active_doodle_window = window
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    
+    loop.exec_()
+    return result['pixmap']
 
 
 class PicBot(QWidget):
@@ -161,6 +293,12 @@ class PicBot(QWidget):
         
         self.doodle_window = None
         self.is_doodling = False
+        self._hotkeys_registered = False
+        self._last_captured = None
+    
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.register_hotkeys()
 
     def send_message(self):
         user_input = self.input_box.toPlainText()
@@ -288,9 +426,13 @@ class PicBot(QWidget):
         self.screenshot_window.screenshot_canceled.connect(self.on_screenshot_canceled)
         self.screenshot_window.screenshot_pinned.connect(self.on_screenshot_pinned)
         self.screenshot_window.setGeometry(all_x, all_y, total_w, total_h)
+        global _active_screenshot_window
+        _active_screenshot_window = self.screenshot_window
         self.screenshot_window.show()
     
     def on_screenshot_canceled(self):
+        global _active_screenshot_window
+        _active_screenshot_window = None
         # 取消截图，重新显示主窗口
         self.show()
     
@@ -353,6 +495,8 @@ class PicBot(QWidget):
         self.stop_doodle()
 
     def on_screenshot_taken(self, pixmap):
+        global _active_screenshot_window
+        _active_screenshot_window = None
         # 显示截图到image_label
         self.image_label.setPixmap(pixmap.scaled(200, 200))
         
@@ -376,7 +520,185 @@ class PicBot(QWidget):
                     return True
         return super().eventFilter(obj, event)
     
+    def register_hotkeys(self):
+        """注册全局快捷键"""
+        if self._hotkeys_registered:
+            return
+        try:
+            hwnd = int(self.winId())
+            if hwnd == 0:
+                logging.warning("窗口句柄无效，无法注册全局快捷键")
+                return
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            flags = MOD_ALT | MOD_NOREPEAT
+            hotkeys = [
+                (HK_SCREENSHOT, VK_1, "ALT+1"),
+                (HK_PASTE, VK_2, "ALT+2"),
+                (HK_CANCEL_SCREENSHOT, VK_3, "ALT+3"),
+                (HK_DOODLE, VK_Q, "ALT+Q"),
+                (HK_DOODLE_END, VK_W, "ALT+W"),
+            ]
+            failed = []
+            for hk_id, vk, name in hotkeys:
+                if not user32.RegisterHotKey(hwnd, hk_id, flags, vk):
+                    err = kernel32.GetLastError()
+                    failed.append(f"{name}(错误码{err})")
+                else:
+                    logging.info(f"全局快捷键 {name} 注册成功")
+            if failed:
+                logging.warning(f"全局快捷键注册失败: {', '.join(failed)}")
+            else:
+                logging.info("全部全局快捷键注册成功")
+            self._hotkeys_registered = True
+        except Exception as e:
+            logging.warning(f"注册全局快捷键异常: {e}")
+    
+    def unregister_hotkeys(self):
+        """注销全局快捷键"""
+        if not self._hotkeys_registered:
+            return
+        try:
+            hwnd = int(self.winId())
+            user32 = ctypes.windll.user32
+            for hk_id in [HK_SCREENSHOT, HK_PASTE, HK_CANCEL_SCREENSHOT, HK_DOODLE, HK_DOODLE_END]:
+                user32.UnregisterHotKey(hwnd, hk_id)
+            self._hotkeys_registered = False
+        except Exception:
+            pass
+    
+    def nativeEvent(self, eventType, message):
+        """处理 Windows 原生事件，捕获全局快捷键"""
+        if eventType == b"windows_generic_MSG":
+            # 使用正确的 MSG 结构体解析（兼容 32/64 位）
+            class MSG(ctypes.Structure):
+                _fields_ = [
+                    ("hwnd", wintypes.HWND),
+                    ("message", wintypes.UINT),
+                    ("wParam", wintypes.WPARAM),
+                    ("lParam", wintypes.LPARAM),
+                    ("time", wintypes.DWORD),
+                    ("pt_x", wintypes.LONG),
+                    ("pt_y", wintypes.LONG),
+                ]
+            msg = ctypes.cast(ctypes.c_void_p(int(message)), ctypes.POINTER(MSG))
+            if msg.contents.message == WM_HOTKEY:
+                hotkey_id = msg.contents.wParam
+                logging.info(f"收到全局快捷键事件: id={hotkey_id}")
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(0, lambda hid=hotkey_id: self._on_hotkey(hid))
+                return True, 0
+        return False, 0
+    
+    def _on_hotkey(self, hotkey_id):
+        """处理全局快捷键事件"""
+        logging.info(f"处理全局快捷键: id={hotkey_id}")
+        if hotkey_id == HK_SCREENSHOT:
+            self._hotkey_screenshot()
+        elif hotkey_id == HK_PASTE:
+            self._hotkey_paste()
+        elif hotkey_id == HK_CANCEL_SCREENSHOT:
+            self._hotkey_cancel_screenshot()
+        elif hotkey_id == HK_DOODLE:
+            self._hotkey_doodle()
+        elif hotkey_id == HK_DOODLE_END:
+            self._hotkey_doodle_end()
+    
+    def _hotkey_screenshot(self):
+        """ALT+1: 截图"""
+        pixmap = capture_screenshot()
+        if pixmap:
+            self._last_captured = pixmap
+            self.image_label.setPixmap(pixmap.scaled(200, 200))
+            import tempfile
+            temp_path = os.path.join(tempfile.gettempdir(), "screenshot.png")
+            pixmap.save(temp_path)
+            self.image_path = temp_path
+    
+    def _hotkey_paste(self):
+        """ALT+2: 粘贴图片"""
+        if self._last_captured:
+            self.image_label.setPixmap(self._last_captured.scaled(200, 200))
+            import tempfile
+            temp_path = os.path.join(tempfile.gettempdir(), "screenshot.png")
+            self._last_captured.save(temp_path)
+            self.image_path = temp_path
+        else:
+            clipboard = QApplication.clipboard()
+            pixmap = clipboard.pixmap()
+            if pixmap and not pixmap.isNull():
+                self._last_captured = pixmap
+                self.image_label.setPixmap(pixmap.scaled(200, 200))
+                import tempfile
+                temp_path = os.path.join(tempfile.gettempdir(), "paste.png")
+                pixmap.save(temp_path)
+                self.image_path = temp_path
+    
+    def _hotkey_cancel_screenshot(self):
+        """ALT+3: 取消/退出截图，并关闭所有钉图窗口"""
+        global _active_screenshot_window, _standalone_pinned_windows
+        # 关闭全局截图窗口
+        if _active_screenshot_window and _active_screenshot_window.isVisible():
+            _active_screenshot_window.close()
+            _active_screenshot_window = None
+        # 关闭主窗口创建的截图窗口
+        sw = getattr(self, 'screenshot_window', None)
+        if sw and sw.isVisible():
+            sw.close()
+        # 关闭主窗口的钉图窗口
+        for w in self.pinned_windows:
+            if w is not None and w.isVisible():
+                w.close()
+        self.pinned_windows.clear()
+        # 关闭独立函数创建的钉图窗口
+        for w in _standalone_pinned_windows:
+            if w is not None and w.isVisible():
+                w.close()
+        _standalone_pinned_windows.clear()
+    
+    def _hotkey_doodle(self):
+        """ALT+Q: 开始涂鸦"""
+        self.hide()
+        QApplication.processEvents()
+        import time
+        time.sleep(0.1)
+        screens = QApplication.screens()
+        screen_geoms = [s.geometry() for s in screens]
+        all_x = min(g.x() for g in screen_geoms)
+        all_y = min(g.y() for g in screen_geoms)
+        all_right = max(g.x() + g.width() for g in screen_geoms)
+        all_bottom = max(g.y() + g.height() for g in screen_geoms)
+        total_w = all_right - all_x
+        total_h = all_bottom - all_y
+        combined = QPixmap(total_w, total_h)
+        combined.fill(Qt.black)
+        painter = QPainter(combined)
+        for s in screens:
+            geom = s.geometry()
+            shot = s.grabWindow(0)
+            painter.drawPixmap(geom.x() - all_x, geom.y() - all_y, shot)
+        painter.end()
+        doodled = start_doodle(combined)
+        if doodled:
+            self._last_captured = doodled
+            self.image_label.setPixmap(doodled.scaled(200, 200))
+            import tempfile
+            temp_path = os.path.join(tempfile.gettempdir(), "doodle.png")
+            doodled.save(temp_path)
+            self.image_path = temp_path
+        self.show()
+    
+    def _hotkey_doodle_end(self):
+        """ALT+W: 结束涂鸦"""
+        global _active_doodle_window
+        if _active_doodle_window and _active_doodle_window.isVisible():
+            _active_doodle_window.close()
+        elif self.doodle_window and self.doodle_window.isVisible():
+            self.doodle_window.close()
+            self.stop_doodle()
+    
     def closeEvent(self, event):
+        self.unregister_hotkeys()
         for w in self.pinned_windows:
             if w is not None:
                 w.close()
@@ -481,13 +803,15 @@ class ScreenshotWindow(QWidget):
         self.cropped_pixmap_original = None
         self.is_screenshot_doodle = False
         self.doodle_last_pos = None
+        self.doodle_window = None
         self.is_dragging = False
         self.drag_offset = None
         self.history = []
         self.future = []
         self.max_history = 50
         self.edit_layer = None
-        self.text_font = QFont('Microsoft YaHei', 20)
+        self.text_font = QFont('Microsoft YaHei')
+        self.text_font.setPixelSize(20)
         self.text_font.setBold(True)
         self.text_color = QColor(Qt.red)
         self.text_size = 20
@@ -499,9 +823,19 @@ class ScreenshotWindow(QWidget):
         self.initUI()
     
     def initUI(self):
-        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setStyleSheet("background-color: transparent;")
         #self.setStyleSheet("background-color: rgba(0, 0, 0, 0.3);")
+        
+        # 设置红色十字光标
+        crosshair_pixmap = QPixmap(32, 32)
+        crosshair_pixmap.fill(Qt.transparent)
+        ch_painter = QPainter(crosshair_pixmap)
+        ch_painter.setPen(QPen(QColor(255, 0, 0), 2))
+        ch_painter.drawLine(16, 0, 16, 32)
+        ch_painter.drawLine(0, 16, 32, 16)
+        ch_painter.end()
+        self.setCursor(QCursor(crosshair_pixmap, 16, 16))
 
         
         self.cancel_btn = QPushButton('取消', self)
@@ -549,22 +883,36 @@ class ScreenshotWindow(QWidget):
         self.pin_btn.clicked.connect(self.on_pin)
         self.pin_btn.hide()
         
-        self.font_btn = QPushButton('字体', self)
+        self.font_btn = QFontComboBox(self)
         self.font_btn.setStyleSheet("background-color: #2E8B57; color: white; border: none; padding: 4px 8px; font-size: 12px;")
-        self.font_btn.pressed.connect(self._on_style_btn_pressed)
-        self.font_btn.clicked.connect(self.on_select_font)
+        self.font_btn.currentFontChanged.connect(self.on_font_changed)
+        self.font_btn.activated.connect(self._on_style_btn_pressed)
         self.font_btn.hide()
         
-        self.color_btn = QPushButton('颜色', self)
+        # 预设颜色列表: (名称, 颜色值)
+        self._preset_colors = [
+            ('赤', '#FF0000'), ('橙', '#FF7F00'), ('黄', '#FFFF00'),
+            ('绿', '#00FF00'), ('青', '#00FFFF'), ('蓝', '#0000FF'),
+            ('紫', '#8B00FF'), ('粉', '#FFC0CB'), ('黑', '#000000'),
+            ('白', '#FFFFFF'), ('酒红', '#8B0000'), ('砖红', '#B22222'),
+        ]
+        
+        self.color_btn = QComboBox(self)
         self.color_btn.setStyleSheet("background-color: #CD853F; color: white; border: none; padding: 4px 8px; font-size: 12px;")
-        self.color_btn.pressed.connect(self._on_style_btn_pressed)
-        self.color_btn.clicked.connect(self.on_select_color)
+        for name, hex_color in self._preset_colors:
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(QColor(hex_color))
+            self.color_btn.addItem(QIcon(pixmap), name)
+        self.color_btn.activated.connect(self._on_style_btn_pressed)
+        self.color_btn.currentTextChanged.connect(self.on_color_changed)
         self.color_btn.hide()
         
-        self.size_btn = QPushButton('大小', self)
+        self.size_btn = QComboBox(self)
         self.size_btn.setStyleSheet("background-color: #8B4513; color: white; border: none; padding: 4px 8px; font-size: 12px;")
-        self.size_btn.pressed.connect(self._on_style_btn_pressed)
-        self.size_btn.clicked.connect(self.on_select_size)
+        self.size_btn.addItems(['8', '10', '12', '14', '16', '18', '20', '24', '28', '32', '36', '48', '64', '72'])
+        self.size_btn.setCurrentText('20')
+        self.size_btn.currentTextChanged.connect(self.on_size_changed)
+        self.size_btn.activated.connect(self._on_style_btn_pressed)
         self.size_btn.hide()
         
         self.text_input = QLineEdit(self)
@@ -620,6 +968,7 @@ class ScreenshotWindow(QWidget):
         self.redo_btn.show()
         self.pin_btn.show()
         
+        self._update_undo_redo_buttons()
         self.update()
     
     def hide_buttons(self):
@@ -673,10 +1022,11 @@ class ScreenshotWindow(QWidget):
     def on_edit_text(self):
         if self.is_text_editing:
             if self.text_input.isVisible():
+                self.save_undo_state()
                 self.finalize_text()
             self.is_text_editing = False
             self.setCursor(Qt.ArrowCursor)
-            #self._hide_text_style_buttons()
+            self._hide_text_style_buttons()
             self.show_buttons()
             return
         if self.is_screenshot_doodle:
@@ -686,59 +1036,59 @@ class ScreenshotWindow(QWidget):
             self.setCursor(Qt.ArrowCursor)
         self.is_text_editing = True
         self.hide_buttons()
+        self._show_text_style_buttons()
         self.setCursor(Qt.IBeamCursor)
     
     def finalize_text(self):
         text = self.text_input.text()
         if text and self.text_input_pos:
+            # 使用与 text_input 相同的位置和尺寸绘制文字，确保对齐
+            text_rect = QRectF(self.text_input_pos.x(), self.text_input_pos.y(),
+                               self.text_input.width(), self.text_input.height())
             painter = QPainter(self.cropped_pixmap)
             painter.setFont(self.text_font)
             painter.setPen(QPen(self.text_color))
-            painter.drawText(self.text_input_pos.x(), self.text_input_pos.y(), text)
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, text)
             painter.end()
             if self.edit_layer:
                 painter = QPainter(self.edit_layer)
                 painter.setFont(self.text_font)
                 painter.setPen(QPen(self.text_color))
-                painter.drawText(self.text_input_pos.x(), self.text_input_pos.y(), text)
+                painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, text)
                 painter.end()
         self.cropped_pixmap_original = None
         self.text_input.hide()
-        #self._hide_text_style_buttons()
         self.update()
     
     def on_text_input_finished(self):
+        self.save_undo_state()
         self.finalize_text()
     
     def on_text_input_changed(self, text):
-        if self.cropped_pixmap_original and self.text_input_pos:
-            self.cropped_pixmap = self.cropped_pixmap_original.copy()
-            if text:
-                painter = QPainter(self.cropped_pixmap)
-                painter.setFont(self.text_font)
-                painter.setPen(QPen(self.text_color))
-                painter.drawText(self.text_input_pos.x(), self.text_input_pos.y(), text)
-                painter.end()
-            self.update()
+        # 不再实时在截图上预览文字，只在编辑框中显示
+        pass
     
-    def on_select_font(self):
-        font, ok = QFontDialog.getFont(self.text_font, self, '选择字体')
-        if ok:
-            self.text_font = font
+    def on_font_changed(self, font):
+        """字体选择框变化时立即生效"""
+        self.text_font = QFont(font)
+        self.text_font.setPixelSize(self.text_size)
+        self._apply_text_style()
+    
+    def on_size_changed(self, text):
+        """字号选择框变化时立即生效"""
+        if text:
+            self.text_size = int(text)
+            self.text_font.setPixelSize(self.text_size)
             self._apply_text_style()
     
-    def on_select_color(self):
-        color = QColorDialog.getColor(self.text_color, self, '选择颜色')
-        if color.isValid():
-            self.text_color = color
-            self._apply_text_style()
-    
-    def on_select_size(self):
-        size, ok = QInputDialog.getInt(self, '选择大小', '字体大小:', self.text_size, 8, 200, 1)
-        if ok:
-            self.text_size = size
-            self.text_font.setPixelSize(size)
-            self._apply_text_style()
+    def on_color_changed(self, name):
+        """颜色选择框变化时立即生效"""
+        if name:
+            for cname, hex_color in self._preset_colors:
+                if cname == name:
+                    self.text_color = QColor(hex_color)
+                    self._apply_text_style()
+                    break
     
     def _apply_text_style(self):
         color_name = self.text_color.name()
@@ -752,24 +1102,24 @@ class ScreenshotWindow(QWidget):
     def _show_text_style_buttons(self):
         select_rect = self.get_rect()
         btn_y = select_rect.bottom() + 10
-        btn_width = 80
         btn_height = 36
         spacing = 5
         
         if btn_y + btn_height * 2 + spacing > self.height():
             btn_y = select_rect.top() - btn_height * 2 - spacing - 10
         
-        row1_count = 7
-        total_width = btn_width * row1_count + spacing * (row1_count - 1)
+        # 字体选择框较宽，颜色和大小选择框较窄
+        font_width = 140
+        color_width = 70
+        size_width = 60
+        total_width = font_width + color_width + size_width + spacing * 2
         start_x = select_rect.center().x() - total_width // 2
         
         row2_y = btn_y + btn_height + spacing
-        redo_width = btn_width * 2 + spacing
         
-        style_x = start_x + redo_width + spacing + (btn_width + spacing)
-        self.font_btn.setGeometry(style_x, row2_y, btn_width, btn_height)
-        self.color_btn.setGeometry(style_x + (btn_width + spacing), row2_y, btn_width, btn_height)
-        self.size_btn.setGeometry(style_x + (btn_width + spacing) * 2, row2_y, btn_width, btn_height)
+        self.font_btn.setGeometry(start_x, row2_y, font_width, btn_height)
+        self.color_btn.setGeometry(start_x + font_width + spacing, row2_y, color_width, btn_height)
+        self.size_btn.setGeometry(start_x + font_width + color_width + spacing * 2, row2_y, size_width, btn_height)
         self.font_btn.show()
         self.color_btn.show()
         self.size_btn.show()
@@ -786,6 +1136,7 @@ class ScreenshotWindow(QWidget):
             if len(self.history) > self.max_history:
                 self.history.pop(0)
             self.future.clear()
+            self._update_undo_redo_buttons()
     
     def undo(self):
         if not self.history:
@@ -796,6 +1147,7 @@ class ScreenshotWindow(QWidget):
         self.is_text_editing = False
         if self.text_input and self.text_input.isVisible():
             self.text_input.hide()
+        self._update_undo_redo_buttons()
         self.update()
     
     def redo(self):
@@ -807,7 +1159,20 @@ class ScreenshotWindow(QWidget):
         self.is_text_editing = False
         if self.text_input and self.text_input.isVisible():
             self.text_input.hide()
+        self._update_undo_redo_buttons()
         self.update()
+    
+    def _update_undo_redo_buttons(self):
+        """更新后退/前进按钮的颜色状态"""
+        gray_style = "background-color: #555555; color: white; border: none; padding: 8px 16px; font-size: 14px;"
+        if self.history:
+            self.undo_btn.setStyleSheet("background-color: #CC3333; color: white; border: none; padding: 8px 16px; font-size: 14px;")
+        else:
+            self.undo_btn.setStyleSheet(gray_style)
+        if self.future:
+            self.redo_btn.setStyleSheet("background-color: #33AA33; color: white; border: none; padding: 8px 16px; font-size: 14px;")
+        else:
+            self.redo_btn.setStyleSheet(gray_style)
     
     def eventFilter(self, obj, event):
         if obj == self.text_input:
@@ -826,16 +1191,37 @@ class ScreenshotWindow(QWidget):
         if not self.is_screenshot_doodle:
             self.is_screenshot_doodle = True
             self.doodle_btn.setText('结束涂鸦')
+            self.save_undo_state()
+            
+            # 隐藏按钮，显示涂鸦按钮
             self.hide_buttons()
             self.doodle_btn.show()
-            self.doodle_last_pos = None
-            self.setCursor(self.create_pen_cursor())
+            
+            # 计算所有屏幕的合并区域
+            screens = QApplication.screens()
+            screen_geoms = [s.geometry() for s in screens]
+            all_x = min(g.x() for g in screen_geoms)
+            all_y = min(g.y() for g in screen_geoms)
+            all_right = max(g.x() + g.width() for g in screen_geoms)
+            all_bottom = max(g.y() + g.height() for g in screen_geoms)
+            total_w = all_right - all_x
+            total_h = all_bottom - all_y
+            
+            # 创建全屏透明涂鸦窗口（不包含屏幕截图，只显示笔迹）
+            combined_size = QPixmap(total_w, total_h)
+            self.doodle_window = DoodleWindow(combined_size, transparent_mode=True)
+            self.doodle_window.doodle_finished.connect(self.on_doodle_finished)
+            self.doodle_window.setGeometry(all_x, all_y, total_w, total_h)
+            self.doodle_window.show()
+            self.doodle_window.raise_()
+            self.doodle_window.activateWindow()
         else:
+            # 结束涂鸦
             self.is_screenshot_doodle = False
-            self.doodle_last_pos = None
             self.doodle_btn.setText('涂鸦')
-            self.setCursor(Qt.ArrowCursor)
-            self.show_buttons()
+            if self.doodle_window:
+                self.doodle_window.close()
+                self.doodle_window = None
     
     def create_pen_cursor(self):
         cursor_size = 40
@@ -880,10 +1266,25 @@ class ScreenshotWindow(QWidget):
     
     def on_doodle_finished(self, doodle_pixmap):
         select_rect = self.get_rect()
+        # 从全屏涂鸦画布中裁剪出截图区域对应的涂鸦笔迹
         doodle_crop = doodle_pixmap.copy(select_rect)
-        self.cropped_pixmap = doodle_crop
         
-        self.show()
+        # 将涂鸦笔迹合并到 cropped_pixmap 上
+        painter = QPainter(self.cropped_pixmap)
+        painter.drawPixmap(0, 0, doodle_crop)
+        painter.end()
+        
+        # 将涂鸦笔迹合并到 edit_layer 上，确保拖动时涂鸦内容不丢失
+        if self.edit_layer:
+            painter = QPainter(self.edit_layer)
+            painter.drawPixmap(0, 0, doodle_crop)
+            painter.end()
+        
+        self.is_screenshot_doodle = False
+        self.doodle_last_pos = None
+        self.doodle_btn.setText('涂鸦')
+        self.doodle_window = None
+        
         self.show_buttons()
         self.is_text_editing = False
         self.update()
@@ -959,7 +1360,6 @@ class ScreenshotWindow(QWidget):
         if self.is_screenshot_doodle and self.cropped_pixmap:
             select_rect = self.get_rect()
             if select_rect.contains(event.pos()):
-                self.save_undo_state()
                 self.doodle_last_pos = QPoint(event.pos().x() - select_rect.x(), event.pos().y() - select_rect.y())
             return
         
@@ -968,6 +1368,13 @@ class ScreenshotWindow(QWidget):
             if select_rect.contains(event.pos()):
                 if self.text_input.isVisible():
                     self.on_text_input_finished()
+                    self.text_input_pos = QPoint(event.pos().x() - select_rect.x(), event.pos().y() - select_rect.y())
+                    self.text_input.move(event.pos())
+                    self.text_input.clear()
+                    self.text_input.show()
+                    self.text_input.setFocus()
+                    self._apply_text_style()
+                    return
                 self.cropped_pixmap_original = self.cropped_pixmap.copy()
                 self.save_undo_state()
                 self.text_input_pos = QPoint(event.pos().x() - select_rect.x(), event.pos().y() - select_rect.y())
@@ -976,7 +1383,6 @@ class ScreenshotWindow(QWidget):
                 self.text_input.show()
                 self.text_input.setFocus()
                 self._apply_text_style()
-                self._show_text_style_buttons()
             return
         
         if self.cropped_pixmap:
@@ -1155,39 +1561,41 @@ class ScreenshotWindow(QWidget):
             self.close()
     
     def closeEvent(self, event):
+        self.setCursor(Qt.ArrowCursor)
         event.accept()
 
 
 class DoodleWindow(QWidget):
     doodle_finished = pyqtSignal(QPixmap)
     
-    def __init__(self, screen_shot=None):
+    def __init__(self, screen_shot=None, transparent_mode=False):
         super().__init__()
         self.screen_shot = screen_shot
+        self.transparent_mode = transparent_mode
         self.initUI()
         self.last_pos = None
         self.drawing = False
     
     def initUI(self):
-        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background-color: transparent;")
         
-        # 获取屏幕尺寸
-        screen_geometry = QApplication.primaryScreen().geometry()
-        
-        # 如果提供了屏幕截图，则使用截图作为画布背景
-        if self.screen_shot:
+        if self.transparent_mode:
+            # 透明模式：画布只包含涂鸦笔迹，窗口透明显示下层内容
+            w = self.screen_shot.width() if self.screen_shot else 1920
+            h = self.screen_shot.height() if self.screen_shot else 1080
+            self.canvas = QPixmap(w, h)
+            self.canvas.fill(Qt.transparent)
+        elif self.screen_shot:
             self.canvas = self.screen_shot.copy()
         else:
-            # 否则截取当前屏幕内容作为画布背景
             screen = QApplication.primaryScreen()
             self.canvas = screen.grabWindow(0)
         
-        # 设置画笔样式
         self.pen_color = Qt.red
         self.pen_width = 5
         
-        # 设置画笔形状的光标
         self.setCursor(self.create_pen_cursor())
     
     def create_pen_cursor(self):

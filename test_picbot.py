@@ -703,24 +703,24 @@ class TestScreenshotWindow(unittest.TestCase):
         self.screenshot_window.start_pos = QPoint(10, 10)
         self.screenshot_window.end_pos = QPoint(100, 100)
         self.screenshot_window.show_preview(QPixmap(90, 90))
-        self.screenshot_window.is_text_editing = True
         
-        self.screenshot_window.mousePressEvent(
-            type('MockEvent', (), {'pos': lambda s: QPoint(50, 50), 'button': lambda s: Qt.LeftButton})()
-        )
+        # 通过 on_edit_text 进入文字编辑模式，样式按钮应显示
+        self.screenshot_window.on_edit_text()
         
         self.assertFalse(self.screenshot_window.font_btn.isHidden())
         self.assertFalse(self.screenshot_window.color_btn.isHidden())
         self.assertFalse(self.screenshot_window.size_btn.isHidden())
     
     def test_text_style_buttons_hide_on_finalize(self):
-        """测试文字编辑完成时隐藏样式按钮"""
+        """测试文字编辑完成时样式按钮保持可见"""
         from PyQt5.QtCore import QPoint
         
         self.screenshot_window.start_pos = QPoint(10, 10)
         self.screenshot_window.end_pos = QPoint(100, 100)
         self.screenshot_window.show_preview(QPixmap(90, 90))
-        self.screenshot_window.is_text_editing = True
+        
+        # 进入文字编辑模式
+        self.screenshot_window.on_edit_text()
         
         self.screenshot_window.mousePressEvent(
             type('MockEvent', (), {'pos': lambda s: QPoint(50, 50), 'button': lambda s: Qt.LeftButton})()
@@ -728,28 +728,33 @@ class TestScreenshotWindow(unittest.TestCase):
         self.screenshot_window.text_input.setText('Hello')
         self.screenshot_window.finalize_text()
         
+        # finalize_text 后样式按钮应保持可见
         self.assertFalse(self.screenshot_window.font_btn.isHidden())
         self.assertFalse(self.screenshot_window.color_btn.isHidden())
         self.assertFalse(self.screenshot_window.size_btn.isHidden())
     
     def test_text_style_buttons_hide_on_edit_toggle(self):
-        """测试切换编辑文字按钮时隐藏样式按钮"""
+        """测试再次点击编辑文字按钮时隐藏样式按钮"""
         from PyQt5.QtCore import QPoint
         
         self.screenshot_window.start_pos = QPoint(10, 10)
         self.screenshot_window.end_pos = QPoint(100, 100)
         self.screenshot_window.show_preview(QPixmap(90, 90))
-        self.screenshot_window.is_text_editing = True
+        
+        # 进入文字编辑模式
+        self.screenshot_window.on_edit_text()
         
         self.screenshot_window.mousePressEvent(
             type('MockEvent', (), {'pos': lambda s: QPoint(50, 50), 'button': lambda s: Qt.LeftButton})()
         )
         self.screenshot_window.text_input.setText('Hello')
+        
+        # 再次点击编辑文字按钮，退出编辑模式，样式按钮应隐藏
         self.screenshot_window.on_edit_text()
         
-        self.assertFalse(self.screenshot_window.font_btn.isHidden())
-        self.assertFalse(self.screenshot_window.color_btn.isHidden())
-        self.assertFalse(self.screenshot_window.size_btn.isHidden())
+        self.assertTrue(self.screenshot_window.font_btn.isHidden())
+        self.assertTrue(self.screenshot_window.color_btn.isHidden())
+        self.assertTrue(self.screenshot_window.size_btn.isHidden())
     
     def test_focus_out_to_style_btn_does_not_finalize(self):
         """测试点击样式按钮不会触发finalize_text"""
@@ -759,7 +764,9 @@ class TestScreenshotWindow(unittest.TestCase):
         self.screenshot_window.start_pos = QPoint(10, 10)
         self.screenshot_window.end_pos = QPoint(100, 100)
         self.screenshot_window.show_preview(QPixmap(90, 90))
-        self.screenshot_window.is_text_editing = True
+        
+        # 进入文字编辑模式
+        self.screenshot_window.on_edit_text()
         
         self.screenshot_window.mousePressEvent(
             type('MockEvent', (), {'pos': lambda s: QPoint(50, 50), 'button': lambda s: Qt.LeftButton})()
